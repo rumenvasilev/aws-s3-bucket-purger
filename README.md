@@ -14,26 +14,26 @@ Features
  - Supports S3 Key Prefix filtering, so you can fan out if you have billions of objects.
  - MIT Licensed
 
-To run, either install go and use `go run main.go` or download the supplied binary. You configure it by passing in environment variables which makes it easy to run on AWS infrastructure, such as a task on ECS for example.
+To run, either install go and use `go run main.go` or download the supplied binary. You configure it by passing in command line arguments.
 
 ```
-AwsRegion=ap-southeast-2 S3Bucket=my.bucket aws-s3-bucket-purger
+aws-s3-bucket-purger -bucket my.bucket -region ap-southeast-2
 ```
 
 The above using the default level of concurrency can purge a bucket of 15 million objects/versions in under an
 hour, limited by CPU and bandwidth.
 
-To remove specific keys filtered by prefix set the `S3Prefix` value,
+To remove specific keys filtered by prefix set the `-prefix` value,
 
 ```
-S3Prefix=A AwsRegion=ap-southeast-2 S3Bucket=my.bucket aws-s3-bucket-purger
+aws-s3-bucket-purger -bucket my.bucket -region ap-southeast-2 -prefix A
 ```
 
 Will remove objects/versions that start with the prefix A.
 
-Need even more speed? You can control the default level of concurrency by setting `LoadConcurrency` with a larger integer value. Keep in mind this value is set to be lower then the current S3 API limits so you may run into issues if you set this too aggressively.
+Need even more speed? You can control the default level of concurrency by setting `-concurrency` with a larger integer value. Keep in mind this value is set to be lower then the current S3 API limits so you may run into issues if you set this too aggressively.
 
 ```
-LoadConcurrency=600 AwsRegion=ap-southeast-2 S3Bucket=my.bucket aws-s3-bucket-purger
+aws-s3-bucket-purger -bucket my.bucket -region ap-southeast-2 -concurrency 600
 ```
 
