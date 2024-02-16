@@ -11,18 +11,25 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        arch: ['amd64', 'arm64']
+        os: ['darwin', 'linux', 'windows']
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: 1.21
+          go-version: 1.22
       - name: Display Go version
         run: go version
       - name: Build
-        run: go build -mod vendor -v ./... -o bin/aws-s3-bucket-purger
+        run: GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build -mod vendor -v ./... -o ./bin/aws-s3-bucket-purger-${{ matrix.arch }}-${{ matrix.os }}
       - name: Release
         uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
         with:
-          files: bin/aws-s3-bucket-purger
+          files: | 
+            bin/aws-s3-bucket-purger-${{ matrix.arch }}-${{ matrix.os }}

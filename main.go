@@ -1,14 +1,16 @@
 package main
 
 import (
+	"errors"
+	"flag"
 	"fmt"
+	"log/slog"
+	"os"
+	"sync"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
-	"log"
-	"os"
-	"strconv"
-	"sync"
 )
 
 type VersionKey struct {
@@ -21,17 +23,38 @@ type VersionKey struct {
 // AwsRegion=ap-southeast-2 S3Bucket=my.bucket S3Prefix=191 go run main.go
 // Which will load delete all records with the bucket with the prefix 191
 func main() {
-	purge()
+	parseFlags()
+	err := purge()
+	if err != nil {
+		slog.Error(err.Error())
+		os.Exit(1)
+	}
 }
 
-func purge() {
-	svc, err := session.NewSession(&aws.Config{
-		Region: aws.String(getEnvString("AwsRegion", ""))},
-	)
+var (
+	region      string
+	bucket      string
+	prefix      string
+	concurrency int
+)
 
+func parseFlags() {
+	flag.StringVar(&region, "region", "", "Provide region name, e.g. '-region ap-southeast-2'")
+	flag.StringVar(&bucket, "bucket", "", "Enter bucket name, e.g. '-bucket my.bucket-name'")
+	flag.StringVar(&prefix, "prefix", "", "If we should purge objects with specific prefix (behind dir structure)")
+	flag.IntVar(&concurrency, "concurrency", 300, "")
+	flag.Parse()
+}
+
+func purge() error {
+	err := validateInput()
 	if err != nil {
-		log.Println(err)
-		return
+		return err
+	}
+
+	svc, err := session.NewSession(&aws.Config{Region: &region})
+	if err != nil {
+		return err
 	}
 
 	var wg sync.WaitGroup
@@ -43,8 +66,8 @@ func purge() {
 	wg.Add(1)
 	go func() {
 		err = s3client.ListObjectsPages(&s3.ListObjectsInput{
-			Bucket: aws.String(getEnvString("S3Bucket", "")),
-			Prefix: aws.String(getEnvString("S3Prefix", "")),
+			Bucket: &bucket,
+			Prefix: &prefix,
 		}, func(page *s3.ListObjectsOutput, lastPage bool) bool {
 			for _, value := range page.Contents {
 				s3ListQueue <- *value.Key
@@ -53,7 +76,7 @@ func purge() {
 		})
 
 		if err != nil {
-			log.Println(err)
+			slog.Error(err.Error())
 		}
 
 		close(s3ListQueue)
@@ -64,8 +87,8 @@ func purge() {
 	wg.Add(1)
 	go func() {
 		err = s3client.ListObjectVersionsPages(&s3.ListObjectVersionsInput{
-			Bucket: aws.String(getEnvString("S3Bucket", "")),
-			Prefix: aws.String(getEnvString("S3Prefix", "")),
+			Bucket: &bucket,
+			Prefix: &prefix,
 		}, func(page *s3.ListObjectVersionsOutput, lastPage bool) bool {
 			for _, value := range page.Versions {
 				s3VersionListQueue <- VersionKey{
@@ -85,69 +108,65 @@ func purge() {
 		})
 
 		if err != nil {
-			log.Println(err)
+			slog.Error(err.Error())
 		}
 
 		close(s3VersionListQueue)
 		wg.Done()
 	}()
 
-	for i := 0; i < getEnvInt("LoadConcurrency", 300); i++ {
+	for range concurrency {
 		wg.Add(1)
 		go func(input chan string) {
 			for key := range input {
-				log.Println(fmt.Sprintf("purge::key:%s", key))
+				slog.Info("Purging", "key", key)
 
-				s3client.DeleteObject(&s3.DeleteObjectInput{
-					Bucket: aws.String(getEnvString("S3Bucket", "")),
-					Key:    aws.String(key),
+				_, err := s3client.DeleteObject(&s3.DeleteObjectInput{
+					Bucket: &bucket,
+					Key:    &key,
 				})
+				if err != nil {
+					slog.Error(fmt.Sprintf("Couldn't delete object %s", key))
+				}
 			}
 			wg.Done()
 		}(s3ListQueue)
 	}
 
-	for i := 0; i < getEnvInt("LoadConcurrency", 300); i++ {
+	for range concurrency {
 		wg.Add(1)
 		go func(input chan VersionKey) {
 			for key := range input {
-				log.Println(fmt.Sprintf("purge::key:%s", key))
+				slog.Info("Purging", "Key", key.Name, "Version", key.VersionId)
 
-				s3client.DeleteObject(&s3.DeleteObjectInput{
-					Bucket:    aws.String(getEnvString("S3Bucket", "")),
-					Key:       aws.String(key.Name),
-					VersionId: aws.String(key.VersionId),
+				_, err := s3client.DeleteObject(&s3.DeleteObjectInput{
+					Bucket:    &bucket,
+					Key:       &key.Name,
+					VersionId: &key.VersionId,
 				})
+				if err != nil {
+					slog.Error(fmt.Sprintf("Couldn't delete object %s, version %s", key.Name, key.VersionId))
+				}
 			}
 			wg.Done()
 		}(s3VersionListQueue)
 	}
 
-	log.Println(fmt.Sprintf("starting::bucket:%s::prefix:%s", getEnvString("S3Bucket", ""), getEnvString("S3Prefix", "")))
+	slog.Info("Starting...", "Bucket", bucket, "Region", region, "Prefix", prefix)
 	wg.Wait()
-	log.Println(fmt.Sprintf("finished::bucket:%s::prefix:%s", getEnvString("S3Bucket", ""), getEnvString("S3Prefix", "")))
+	slog.Info("Finished", "Bucket", bucket, "Region", region, "Prefix", prefix)
+	return nil
 }
 
-func getEnvString(variable string, def string) string {
-	val := os.Getenv(variable)
-
-	if val != "" {
-		return val
+func validateInput() error {
+	if region == "" {
+		flag.PrintDefaults()
+		return errors.New("region not provided")
+	}
+	if bucket == "" {
+		flag.PrintDefaults()
+		return errors.New("region / bucket not provided")
 	}
 
-	return def
-}
-
-func getEnvInt(variable string, def int) int {
-	tmp := os.Getenv(variable)
-
-	if tmp != "" {
-		val, err := strconv.Atoi(tmp)
-
-		if err == nil {
-			return val
-		}
-	}
-
-	return def
+	return nil
 }
